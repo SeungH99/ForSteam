@@ -1,0 +1,124 @@
+name: Unreal Engine CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+      - chore/**
+      - feature/**
+      - fix/**
+      - perf/**
+      - refactor/**
+      - ci/**
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_NAME: ForSteam
+  PROJECT_FILE: ForSteam.uproject
+  UE_ENGINE_PATH: ${{ secrets.UE_ENGINE_PATH }}
+
+jobs:
+  build-and-test:
+    name: Build Editor and Run Project Tests
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          fetch-depth: 1
+
+      - name: Validate Unreal Engine environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:UE_ENGINE_PATH)) {
+            throw "UE_ENGINE_PATH secret is not configured."
+          }
+
+          $enginePath = ($env:UE_ENGINE_PATH).TrimEnd([char[]]@("\", "/"))
+          $projectPath = Join-Path $env:GITHUB_WORKSPACE $env:PROJECT_FILE
+          $requiredPaths = @(
+            $enginePath,
+            (Join-Path $enginePath "Engine\Build\BatchFiles\GenerateProjectFiles.bat"),
+            (Join-Path $enginePath "Engine\Build\BatchFiles\Build.bat"),
+            (Join-Path $enginePath "Engine\Binaries\Win64\UnrealEditor-Cmd.exe"),
+            $projectPath
+          )
+
+          foreach ($path in $requiredPaths) {
+            if (!(Test-Path -LiteralPath $path)) {
+              throw "Required path does not exist: $path"
+            }
+          }
+
+          "UE_ENGINE_PATH_NORMALIZED=$enginePath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PROJECT_PATH=$projectPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Generate project files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $generateProjectFiles = Join-Path $env:UE_ENGINE_PATH_NORMALIZED "Engine\Build\BatchFiles\GenerateProjectFiles.bat"
+
+          & $generateProjectFiles `
+            -project="$env:PROJECT_PATH" `
+            -game `
+            -engine
+
+      - name: Build editor target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $buildScript = Join-Path $env:UE_ENGINE_PATH_NORMALIZED "Engine\Build\BatchFiles\Build.bat"
+
+          & $buildScript `
+            "$($env:PROJECT_NAME)Editor" `
+            Win64 `
+            Development `
+            -Project="$env:PROJECT_PATH" `
+            -WaitMutex `
+            -NoHotReload
+
+      - name: Run project automation tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $editorCmd = Join-Path $env:UE_ENGINE_PATH_NORMALIZED "Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+
+          & $editorCmd `
+            "$env:PROJECT_PATH" `
+            -ExecCmds="Automation RunTests Project; Quit" `
+            -TestExit="Automation Test Queue Empty" `
+            -unattended `
+            -nop4 `
+            -nosplash `
+            -nullrhi `
+            -log
+
+      - name: Upload Unreal logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unreal-ci-logs-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            Saved/Logs/
+            *.log
+          if-no-files-found: warn
+          retention-days: 14
