@@ -46,9 +46,18 @@
 *.VC.opendb
 .vsconfig
 
-# Precompiled Assets
-SourceArt/**/*.png
-SourceArt/**/*.tga
+# Local DCC source/export/reference files
+SourceArt/
+*.blend
+*.blend1
+*.fbx
+*.glb
+*.gltf
+*.obj
+*.abc
+*.usd
+*.usdc
+*.usdz
 
 # Binary Files
 Binaries/
