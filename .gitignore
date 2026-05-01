@@ -85,6 +85,12 @@ Plugins/**/DerivedDataCache/
 # Local MCP automation bridge
 Plugins/McpAutomationBridge/
 
+# Local planning and design documents
+docs/local/
+
+# Local git worktrees
+.worktrees/
+
 # Unreal generated local files
 *.tmp
 *.uatbuildrecord
