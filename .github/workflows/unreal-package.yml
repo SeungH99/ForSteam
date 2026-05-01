@@ -1,0 +1,111 @@
+name: Unreal Engine Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Target platform passed to Unreal Automation Tool.
+        required: true
+        default: Win64
+        type: choice
+        options:
+          - Win64
+      configuration:
+        description: Client build configuration.
+        required: true
+        default: Development
+        type: choice
+        options:
+          - Development
+          - Shipping
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform }}-${{ inputs.configuration }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_NAME: ForSteam
+  PROJECT_FILE: ForSteam.uproject
+  UE_ENGINE_PATH: ${{ secrets.UE_ENGINE_PATH }}
+  ARCHIVE_ROOT: PackagedBuilds
+
+jobs:
+  package:
+    name: Package ${{ inputs.platform }} ${{ inputs.configuration }}
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          fetch-depth: 1
+
+      - name: Validate Unreal Engine environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:UE_ENGINE_PATH)) {
+            throw "UE_ENGINE_PATH secret is not configured."
+          }
+
+          $enginePath = ($env:UE_ENGINE_PATH).TrimEnd([char[]]@("\", "/"))
+          $projectPath = Join-Path $env:GITHUB_WORKSPACE $env:PROJECT_FILE
+          $runUat = Join-Path $enginePath "Engine\Build\BatchFiles\RunUAT.bat"
+
+          foreach ($path in @($enginePath, $runUat, $projectPath)) {
+            if (!(Test-Path -LiteralPath $path)) {
+              throw "Required path does not exist: $path"
+            }
+          }
+
+          "UE_ENGINE_PATH_NORMALIZED=$enginePath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PROJECT_PATH=$projectPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RUN_UAT=$runUat" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Package project
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archiveDirectory = Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_ROOT
+
+          & $env:RUN_UAT `
+            BuildCookRun `
+            -project="$env:PROJECT_PATH" `
+            -noP4 `
+            -platform="${{ inputs.platform }}" `
+            -clientconfig="${{ inputs.configuration }}" `
+            -build `
+            -cook `
+            -pak `
+            -stage `
+            -archive `
+            -archivedirectory="$archiveDirectory" `
+            -utf8output
+
+      - name: Upload packaged build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ForSteam-${{ inputs.platform }}-${{ inputs.configuration }}-${{ github.run_number }}
+          path: PackagedBuilds/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Unreal logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unreal-package-logs-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            Saved/Logs/
+            *.log
+          if-no-files-found: warn
+          retention-days: 14
